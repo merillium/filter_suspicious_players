@@ -42,6 +42,10 @@ def make_player_features(CSV_RAW_FEATURES_FILE_PATH):
 
     ##  source: https://www.reddit.com/r/chess/comments/i0pnv1/comment/fzrhhwi
 
+    ## ratings and RDs must first be converted to the glicko-2 scale by dividing by 400 / ln(10),
+    ## otherwise the expected score is far too extreme (e.g. 0.83 instead of ~0.63 for a 100 point favorite)
+    GLICKO2_SCALE = 400 / np.log(10)
+
     def g(x):
         return 1 / np.sqrt(1 + 3 * x**2 / np.pi**2)
 
@@ -49,9 +53,8 @@ def make_player_features(CSV_RAW_FEATURES_FILE_PATH):
         player_rating, opponent_rating, player_rd=80.0, opponent_rd=80.0
     ):
         """Returns expected score of player based on player rating, opponent rating, and RDs (if known)."""
-        A = g(np.sqrt(player_rd**2 + opponent_rd**2)) * (
-            player_rating - opponent_rating
-        )
+        combined_rd = np.sqrt(player_rd**2 + opponent_rd**2) / GLICKO2_SCALE
+        A = g(combined_rd) * (player_rating - opponent_rating) / GLICKO2_SCALE
         return 1 / (1 + np.exp(-A))
 
     all_player_games_filtered_df["expected_scores"] = get_player_expected_score(
@@ -63,6 +66,38 @@ def make_player_features(CSV_RAW_FEATURES_FILE_PATH):
     all_player_games_filtered_df["performance_difference"] = (
         all_player_games_filtered_df["actual_scores"]
         - all_player_games_filtered_df["expected_scores"]
+    )
+
+    ## RD is not included in the lichess game data, so we estimate each player's RD before each game
+    ## from the size of their rating change, by inverting the glicko-1 update (with q = 1 / GLICKO2_SCALE):
+    ##     rating_gain = q / (1/RD^2 + 1/d^2) * g(RD_opp) * (score - E),  where 1/d^2 = q^2 * g(RD_opp)^2 * E * (1 - E)
+    ## e.g. +10 for beating an equal opponent gives RD ~60 (established), +150 gives RD ~290 (new account)
+    ## the estimate assumes the opponent's RD is 80, and is left empty when the result was close to expected,
+    ## because the rating change is then too small and too heavily rounded to be informative
+    def estimate_player_rd(
+        player_rating, opponent_rating, score, rating_gain, opponent_rd=80.0
+    ):
+        """Returns the estimated RD of a player before a game based on their rating change, or nan."""
+        q = 1 / GLICKO2_SCALE
+        g_opponent = g(opponent_rd * q)
+        expected_score = 1 / (
+            1 + np.exp(-g_opponent * (player_rating - opponent_rating) * q)
+        )
+        score_surprise = score - expected_score
+        with np.errstate(divide="ignore", invalid="ignore"):
+            K = rating_gain / (q * g_opponent * score_surprise)
+            inverse_rd_squared = 1 / K - q**2 * g_opponent**2 * expected_score * (
+                1 - expected_score
+            )
+            estimated_rd = 1 / np.sqrt(inverse_rd_squared)
+        is_valid = (np.abs(score_surprise) > 0.1) & (K > 0) & (inverse_rd_squared > 0)
+        return np.where(is_valid, estimated_rd, np.nan)
+
+    all_player_games_filtered_df["estimated_rd"] = estimate_player_rd(
+        player_rating=all_player_games_filtered_df["ratings"].to_numpy(),
+        opponent_rating=all_player_games_filtered_df["opponent_ratings"].to_numpy(),
+        score=all_player_games_filtered_df["actual_scores"].to_numpy(),
+        rating_gain=all_player_games_filtered_df["rating_gains"].to_numpy(),
     )
 
     ## AGGREGATE GAME RESULTS FEATURES by player + time control
@@ -88,7 +123,36 @@ def make_player_features(CSV_RAW_FEATURES_FILE_PATH):
         mean_rating_gain=("rating_gains", "mean"),
         std_rating_gain=("rating_gains", "std"),
         proportion_increment_games=("increments", "mean"),
+        median_estimated_rd=("estimated_rd", "median"),
     )
+
+    ## players new to the rating pool (high RD) start at 1500 and move quickly towards their true rating,
+    ## e.g. a master who starts at 1500 overperforms in every game on the way up, and a beginner underperforms
+    ## on the way down, so we also aggregate settled (RD < 80) and new (RD >= 80) games separately
+    ## games without an RD estimate are excluded from both groups
+    MAX_SETTLED_RD = 80.0
+    for rd_group, rd_mask in {
+        "settled": all_player_games_filtered_df["estimated_rd"] < MAX_SETTLED_RD,
+        "new": all_player_games_filtered_df["estimated_rd"] >= MAX_SETTLED_RD,
+    }.items():
+        rd_group_features = (
+            all_player_games_filtered_df.loc[
+                rd_mask, ["ratings", "performance_difference", "rating_gains"]
+            ]
+            .groupby(level=["player", "time_control"])
+            .agg(
+                **{
+                    f"number_of_{rd_group}_games": ("ratings", "count"),
+                    f"mean_rating_{rd_group}": ("ratings", "mean"),
+                    f"mean_perf_diff_{rd_group}": ("performance_difference", "mean"),
+                    f"mean_rating_gain_{rd_group}": ("rating_gains", "mean"),
+                }
+            )
+        )
+        all_player_features = all_player_features.join(rd_group_features)
+        all_player_features[f"number_of_{rd_group}_games"] = (
+            all_player_features[f"number_of_{rd_group}_games"].fillna(0).astype(int)
+        )
 
     ## some useful red flags for suspicious behavior:
     # (1) consistently performing above expectation

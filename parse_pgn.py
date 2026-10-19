@@ -100,7 +100,8 @@ def parse_pgn(PGN_FILE_PATH):
             time_control = TimeControl.BLITZ.value
         elif TimeControl.RAPID.value in event.lower():
             time_control = TimeControl.RAPID.value
-        elif TimeControl.CLASSICAL.value in event.lower():
+        # older games label the classical rating pool as "Standard"
+        elif (TimeControl.CLASSICAL.value in event.lower()) | ("standard" in event.lower()):
             time_control = TimeControl.CLASSICAL.value
         else:
             time_control = TimeControl.OTHER.value
@@ -111,7 +112,8 @@ def parse_pgn(PGN_FILE_PATH):
         white_gain, black_gain = headers.get("WhiteRatingDiff"), headers.get(
             "BlackRatingDiff"
         )
-        increment = headers["TimeControl"][0]
+        # TimeControl is "base+increment", e.g. "180+2"
+        increment = headers["TimeControl"].partition("+")[2]
         result = headers["Result"]
 
         # skip games with unknown players, ratings, rating difference, or result
@@ -141,7 +143,7 @@ def parse_pgn(PGN_FILE_PATH):
             white_gain = float(white_gain)
             black_gain = float(black_gain)
 
-            is_increment = 0 if increment == "0" else 1
+            is_increment = 0 if increment in ("", "0") else 1
 
             # update white player info
             update_all_player_info(

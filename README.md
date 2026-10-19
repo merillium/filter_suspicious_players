@@ -9,20 +9,43 @@ pip install -r requirements.txt
 ```
 
 ### Data Download and Preprocessing
-To download and preprocess data from the lichess.org open database, you can run the following command (specifying the year and month of the data you want to download, and the source of the data to be `lichess-open-database`):
+To download and preprocess data from the lichess.org open database, you can run the following command (specifying the year and month of the data you want to download):
 
 ```bash
-python3 download_and_preprocess.py --year 2015 --month 1 --source lichess-open-database
+python3 download_and_preprocess.py --year 2018 --month 1
 ```
 
-Warning: preprocessing will take a long time to complete for more recent data which can be well over 20 GB in size. You can use caffeinate to prevent your computer from going to sleep while the script is running.
+The data is read from the [Lichess/standard-chess-games](https://huggingface.co/datasets/Lichess/standard-chess-games) dataset on Hugging Face, which contains the lichess.org open database as parquet files partitioned by year and month. Because parquet files are stored by column, the script uses [DuckDB](https://duckdb.org/docs/api/python/overview) to download only the header columns it needs (players, ratings, rating changes, result, time control, and date/time) and never downloads the moves. For Jan 2018, this is 512 MB instead of the full 11.9 GB. Note that the Hugging Face dataset is updated some time after lichess publishes each month, so the most recent months may not be available yet.
+
+Each month is split into many parquet files, which are downloaded one at a time and cached in `lichess_downloaded_games/lichess_db_standard_rated_<year>-<month>/`. If Hugging Face rate limits the download, the script waits and retries, and if the script is interrupted, running it again will resume from the files that have already been downloaded.
+
+Warning: downloading and preprocessing will take a long time to complete for more recent data (Jan 2018 takes around an hour, and recent months contain several times as many games). Logging in with a Hugging Face [access token](https://huggingface.co/settings/tokens) (a read-only token is sufficient) raises the rate limits, which speeds up the download considerably. The following command (installed with `pip install huggingface_hub`) saves the token to `~/.cache/huggingface/token`, outside of this repo, where the script will find it automatically (alternatively, you can set the `HF_TOKEN` environment variable):
 
 ```bash
-caffeinate -is python3 download_and_preprocess.py --year 2015 --month 1 --source lichess-open-database
+huggingface-cli login
 ```
 
+You can use caffeinate to prevent your computer from going to sleep while the script is running.
 
-The `download_and_preprocess.py` script downloads the `.pgn.zst` file corresponding to the month and year specified, decompresses the `.pgn` file, and creates the `lichess_downloaded_games` directory to which both files are saved. Then the script preprocesses the `.pgn` file and extracts relevant features, creates the `lichess_player_data` directory, to which a `.csv` file is saved. By default, exploratory plots are generated, and then all raw files in the `lichess_downloaded_games` directory are deleted because they are typically large and not needed after preprocessing. (This process can be streamlined by directly reading from the decompressed `.pgn` file instead of first saving it)
+```bash
+caffeinate -is python3 download_and_preprocess.py --year 2018 --month 1
+```
+
+The `download_and_preprocess.py` script creates the `lichess_player_data` directory, to which the following files are saved, and then generates exploratory plots:
+- `lichess_db_standard_rated_<year>-<month>.csv`: one row per player per game, with the player's rating, opponent's rating, score, rating change, whether the game had an increment, and the date and time of the game. Games are classified as bullet, blitz, rapid, or classical based on the rating pool in the game's event name (older games label the classical rating pool as "Standard").
+- `lichess_db_standard_rated_<year>-<month>_player_features.csv`: one row per player and time control, created by `make_player_features.py` (see below).
+
+### Player Features
+`make_player_features.py` aggregates each player's games by time control, for players with at least 30 games in that time control. The main feature is the performance difference: the player's actual score minus their expected score under the Glicko-2 rating system, averaged over their games (`mean_perf_diff`).
+
+Rating deviation (RD) is not included in the lichess game data, so each player's RD before each game is estimated from the size of their rating change (e.g. +10 for beating an equal opponent corresponds to an RD of around 60, while +150 corresponds to an RD of around 290). Players who are new to the rating pool start at 1500 with a high RD and move quickly towards their true rating, so a strong player who is new to the pool will overperform on the way up, and a beginner will underperform on the way down. To separate this effect from genuine over- or underperformance, the performance difference, mean rating, and rating change are also aggregated separately for settled games (estimated RD < 80) and new games (estimated RD >= 80), with the suffixes `_settled` and `_new`.
+
+### Exploratory Plots
+`make_exploratory_plots.py` saves interactive html plots to the `exploratory_plots` directory, showing the distribution of mean performance difference by rating bin for bullet, blitz, and classical. Settled and new games are plotted separately (`_perf_diff_settled` and `_perf_diff_new`), on the same x-axis range so they can be compared directly. The plots can also be generated from an existing player features file:
+
+```bash
+python3 make_exploratory_plots.py lichess_player_data/lichess_db_standard_rated_2018-01_player_features.csv
+```
 
 ### Model Description
 This is a simple statistical model that flags players who have performed a certain threshold above their expected performance under the Glicko-2 rating system. The expected performance takes into account each player's complete game history and opponents in the span of the training data. The thresholds are initialized to default values, and then adjusted separately for each 100 point rating bin in the training data.
@@ -73,6 +96,7 @@ Currently working on unit tests, which can be run with the following command:
 
 To-do:
 - implement progress bars for preprocessing data and model training
+- currently running tests to process > 1GB files, which I may outsource to GCP
 - complete data labelling using lichess API calls, with a workaround or retry request if API rate limiting occurs 
 - write unit tests for scripts that perform feature extraction and data labelling
 - complete unit tests for `PlayerAnomalyDetectionModel` class and methods (in-progress)
