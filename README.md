@@ -48,10 +48,13 @@ python3 make_exploratory_plots.py lichess_player_data/lichess_db_standard_rated_
 ```
 
 ### Model Description
-This is a simple statistical model that flags players who have performed a certain threshold above their expected performance under the Glicko-2 rating system. The expected performance takes into account each player's complete game history and opponents in the span of the training data. The thresholds are initialized to default values, and then adjusted separately for each 100 point rating bin in the training data.
+This is a simple statistical model that flags players who have performed a certain threshold above their expected performance under the Glicko-2 rating system. The expected performance takes into account each player's complete game history and opponents in the span of the training data. A separate threshold is fitted for each time control, each 100 point rating bin, and for settled games and new games (see Player Features above), because a legitimate strong player who is new to the rating pool will naturally overperform on the way up from 1500, while the same rise for a settled player is much rarer. A player is evaluated on their settled games if they have at least 30 of them, and on their new games if they have at least 10, and is flagged if either is above the threshold for their rating bin. The thresholds are initialized to default values (0.10 for settled games and 0.20 for new games), and then adjusted for each rating bin in the training data.
+
+### Data Labelling
+Players are labelled by the status of their lichess account, using `PlayerAccountHandler`, which requests up to 300 players at a time from the lichess API. The lichess API is limited to 8,000 users every 10 minutes and 120,000 users per day, and asks that it not be used to download all users, so the handler makes one request every 24 seconds, waits at least 70 seconds if it is rate limited, and requests at most 110,000 users per run. If the handler is given a cache file path, account statuses are saved after each request, so players are never requested twice and an interrupted run can be resumed. Only the players in the top 10% of performance difference within each rating bin are labelled (around 20,000 players for Jan 2018), since these are the only players that thresholds are searched over.
 
 ### Model Training
-We define `N` as the number of players who have performed above some threshold, and the estimated number of cheaters as `X = 0.00 * N_open + 0.75 * N_closed + 1.00 * N_violation` where `N_open` is the number of players with open accounts, `N_closed` is the number of players with closed accounts, and `N_violation` is the number of players with a terms of service violation (where `N = N_open + N_closed + N_violation`), the metric used to evaluate the performance of the threshold is the `log(N+1) * X / N`. This is a simple metric intended to reward the model for `high accuracy = X / N` in detecting suspicious players without flagging too many players (observationally, if the threshold is too low, the accuracy will decrease faster than `log(N)`). Note that for a threshold that is too high and flags 0 players, the metric will be 0. This metric may be fine-tuned in the future, but is sufficient for a POC.
+We define `N` as the number of players who have performed above some threshold, and the estimated number of cheaters as `X = 0.00 * N_open + 0.75 * N_closed + 1.00 * N_violation` where `N_open` is the number of players with open accounts, `N_closed` is the number of players with closed accounts, and `N_violation` is the number of players with a terms of service violation (where `N = N_open + N_closed + N_violation`). Players whose accounts are not found are excluded. The default metric used to evaluate the performance of the threshold is the lower bound of the 95% [Wilson confidence interval](https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval) for the accuracy `X / N` (`metric="wilson_lower_bound"`): the accuracy we can be confident in among the players above the threshold. A threshold that is too low flags many players, but at an accuracy close to that of all players, while a threshold that is too high flags so few players that the confidence interval is very wide, so the lower bound is highest in between. For example, 3 of 3 flagged players being cheaters only tells us the accuracy is at least 44%, while 60 of 100 tells us it is at least 50%. Alternatively, `metric="log_flagged"` uses `log(N+1) * X / N`, which rewards the accuracy and the number of flagged players, but continues to increase as more players are flagged even when they are no more likely to be cheating than any other player. The threshold is chosen by a grid search in steps of 0.005, from the 90th percentile of performance difference in the rating bin (or 0, if higher) up to the highest performance difference.
 
 ### Sample code:
 ```python
@@ -59,9 +62,9 @@ import pandas as pd
 from player_account_handler import PlayerAccountHandler
 from model import PlayerAnomalyDetectionModel
 
-BASE_FILE_NAME = 'lichess_db_standard_rated_2015-01'
+BASE_FILE_NAME = 'lichess_db_standard_rated_2018-01'
 train_data = pd.read_csv(f'lichess_player_data/{BASE_FILE_NAME}_player_features.csv')
-player_account_handler = PlayerAccountHandler()
+player_account_handler = PlayerAccountHandler('lichess_player_data/account_statuses.csv')
 model = PlayerAnomalyDetectionModel(player_account_handler)
 model.fit(train_data)
 model.save_model(f'{BASE_FILE_NAME}_model')
@@ -70,13 +73,17 @@ predictions = model.predict(train_data)
 
 ### Model Evaluation
 
-When the model is fitted, there are accuracy metric vs threshold figures that are saved to the `model_plots` directory as json files. The figure object can be loaded from the json file, as shown in the example code snippet below:
+When the model is fitted, plots showing how the threshold was chosen are saved to the `model_plots` directory as html files (to view in a browser) and json files:
+- `test_model_thresholds_overview`: the threshold chosen for every time control, settled or new games, and rating bin, and the Wilson lower bound at that threshold.
+- `test_model_thresholds_<time control>_<settled or new>_<rating bin>`: for one rating bin, the accuracy `X / N` at each threshold with its 95% Wilson confidence interval, the number of flagged players, and the chosen threshold.
+
+The figure object can be loaded from the json file, as shown in the example code snippet below:
 
 ```python
 import json
 import plotly.io as pio
 
-f = open('model_plots/test_model_thresholds_classical_1400-1500.json')
+f = open('model_plots/test_model_thresholds_blitz_settled_1800-1900.json')
 data = json.load(f)
 
 fig = pio.from_json(data)
