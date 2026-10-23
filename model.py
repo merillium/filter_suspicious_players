@@ -126,11 +126,23 @@ class PlayerAnomalyDetectionModel:
             self._threshold_metrics
         )
 
-    def load_model(self, model_file_name: str):
+    def load_model(
+        self,
+        model_name: str = "player_anomaly_detection_model",
+        saved_models_folder=Folders.SAVED_MODELS.value,
+    ):
         """
-        Loads a model from a file. Not yet implemented.
+        Loads the thresholds of a model saved with .save_model, and marks the model as fitted.
         """
-        pass
+        with open(f"{saved_models_folder}/{model_name}.pkl", "rb") as f:
+            thresholds = pickle.load(f)
+        ## models saved before settled and new games were fitted separately are keyed by time control only
+        if not all(key in thresholds for key in self._thresholds):
+            raise ValueError(
+                f"{model_name} was saved by an older version of the model, and must be refitted"
+            )
+        self._thresholds = thresholds
+        self.is_fitted = True
 
     def fit(self, train_data: pd.DataFrame, generate_plots=True):
         if not self.is_fitted:
@@ -284,10 +296,10 @@ class PlayerAnomalyDetectionModel:
         model_name: str = "player_anomaly_detection_model",
         saved_models_folder=Folders.SAVED_MODELS.value,
     ):
-        if not os.path.exists(Folders.SAVED_MODELS.value):
-            os.mkdir(Folders.SAVED_MODELS.value)
-        if os.path.exists(f"{Folders.SAVED_MODELS.value}/{model_name}"):
+        if not os.path.exists(saved_models_folder):
+            os.mkdir(saved_models_folder)
+        if os.path.exists(f"{saved_models_folder}/{model_name}"):
             model_name = model_name + "_"
 
-        with open(f"{Folders.SAVED_MODELS.value}/{model_name}.pkl", "wb") as f:
+        with open(f"{saved_models_folder}/{model_name}.pkl", "wb") as f:
             pickle.dump(self._thresholds, f)

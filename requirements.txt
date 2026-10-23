@@ -9,5 +9,6 @@ pylint==3.0.3
 pytest==7.0.1
 duckdb==1.4.5
 tqdm==4.66.1
+pyarrow>=10.0.1
 
 debugpy # Required for debugging.

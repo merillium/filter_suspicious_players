@@ -1,4 +1,5 @@
 import copy
+import tempfile
 import unittest
 import pandas as pd
 from pandas.testing import assert_frame_equal
@@ -192,4 +193,10 @@ class TestPlayerAnomalyDetectionModel(unittest.TestCase):
         pass
 
     def test_load_model(self):
-        pass
+        self.model._thresholds[("blitz", "settled")]["1500-1600"] = 0.16
+        loaded_model = PlayerAnomalyDetectionModel(PlayerAccountHandler())
+        with tempfile.TemporaryDirectory() as saved_models_folder:
+            self.model.save_model("test_model", saved_models_folder)
+            loaded_model.load_model("test_model", saved_models_folder)
+        assert loaded_model.is_fitted
+        assert loaded_model._thresholds == self.model._thresholds

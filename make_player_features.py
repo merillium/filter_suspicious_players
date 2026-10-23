@@ -6,6 +6,17 @@ import pandas as pd
 
 from enums import Folders
 
+## columns saved for each game (with player and time_control) to the player games parquet file
+PLAYER_GAMES_COLUMNS = [
+    "utc_datetime",
+    "ratings",
+    "opponent_ratings",
+    "actual_scores",
+    "rating_gains",
+    "estimated_rd",
+    "performance_difference",
+]
+
 
 def make_player_features(CSV_RAW_FEATURES_FILE_PATH):
     """Creates features at the player + time control level from the CSV file containing raw features."""
@@ -190,6 +201,17 @@ def make_player_features(CSV_RAW_FEATURES_FILE_PATH):
     all_player_features.to_csv(
         f"{Folders.LICHESS_PLAYER_DATA.value}/{BASE_FILE_NAME}_player_features.csv"
     )
+
+    ## save the individual games with their timestamps and estimated RDs, used for player rating graphs
+    ## as parquet, because the csv of all games is too slow to reload (older csv files have no timestamps)
+    if "utc_datetime" in all_player_games_filtered_df.columns:
+        all_player_games_filtered_df["utc_datetime"] = pd.to_datetime(
+            all_player_games_filtered_df["utc_datetime"], format="%Y-%m-%d %H:%M:%S"
+        )
+        all_player_games_filtered_df[PLAYER_GAMES_COLUMNS].reset_index().to_parquet(
+            f"{Folders.LICHESS_PLAYER_DATA.value}/{BASE_FILE_NAME}_player_games.parquet",
+            index=False,
+        )
 
 
 if __name__ == "__main__":

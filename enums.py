@@ -20,3 +20,4 @@ class Folders(Enum):
     MODEL_PLOTS = "model_plots"
     SAVED_MODELS = "saved_models"
     EXPLORATORY_PLOTS = "exploratory_plots"
+    PLAYER_RATING_GRAPHS = "player_rating_graphs"

@@ -34,6 +34,7 @@ caffeinate -is python3 download_and_preprocess.py --year 2018 --month 1
 The `download_and_preprocess.py` script creates the `lichess_player_data` directory, to which the following files are saved, and then generates exploratory plots:
 - `lichess_db_standard_rated_<year>-<month>.csv`: one row per player per game, with the player's rating, opponent's rating, score, rating change, whether the game had an increment, and the date and time of the game. Games are classified as bullet, blitz, rapid, or classical based on the rating pool in the game's event name (older games label the classical rating pool as "Standard").
 - `lichess_db_standard_rated_<year>-<month>_player_features.csv`: one row per player and time control, created by `make_player_features.py` (see below).
+- `lichess_db_standard_rated_<year>-<month>_player_games.parquet`: one row per player per game for the players in the player features file, with the date and time and estimated RD of each game, created by `make_player_features.py` and used for player rating graphs (see below).
 
 ### Player Features
 `make_player_features.py` aggregates each player's games by time control, for players with at least 30 games in that time control. The main feature is the performance difference: the player's actual score minus their expected score under the Glicko-2 rating system, averaged over their games (`mean_perf_diff`).
@@ -54,7 +55,9 @@ This is a simple statistical model that flags players who have performed a certa
 Players are labelled by the status of their lichess account, using `PlayerAccountHandler`, which requests up to 300 players at a time from the lichess API. The lichess API is limited to 8,000 users every 10 minutes and 120,000 users per day, and asks that it not be used to download all users, so the handler makes one request every 24 seconds, waits at least 70 seconds if it is rate limited, and requests at most 110,000 users per run. If the handler is given a cache file path, account statuses are saved after each request, so players are never requested twice and an interrupted run can be resumed. Only the players in the top 10% of performance difference within each rating bin are labelled (around 20,000 players for Jan 2018), since these are the only players that thresholds are searched over.
 
 ### Model Training
-We define `N` as the number of players who have performed above some threshold, and the estimated number of cheaters as `X = 0.00 * N_open + 0.75 * N_closed + 1.00 * N_violation` where `N_open` is the number of players with open accounts, `N_closed` is the number of players with closed accounts, and `N_violation` is the number of players with a terms of service violation (where `N = N_open + N_closed + N_violation`). Players whose accounts are not found are excluded. The default metric used to evaluate the performance of the threshold is the lower bound of the 95% [Wilson confidence interval](https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval) for the accuracy `X / N` (`metric="wilson_lower_bound"`): the accuracy we can be confident in among the players above the threshold. A threshold that is too low flags many players, but at an accuracy close to that of all players, while a threshold that is too high flags so few players that the confidence interval is very wide, so the lower bound is highest in between. For example, 3 of 3 flagged players being cheaters only tells us the accuracy is at least 44%, while 60 of 100 tells us it is at least 50%. Alternatively, `metric="log_flagged"` uses `log(N+1) * X / N`, which rewards the accuracy and the number of flagged players, but continues to increase as more players are flagged even when they are no more likely to be cheating than any other player. The threshold is chosen by a grid search in steps of 0.005, from the 90th percentile of performance difference in the rating bin (or 0, if higher) up to the highest performance difference.
+We define `N` as the number of players who have performed above some threshold, and the estimated number of cheaters as `X = 0.00 * N_open + 0.75 * N_closed + 1.00 * N_violation` where `N_open` is the number of players with open accounts, `N_closed` is the number of players with closed accounts, and `N_violation` is the number of players with a terms of service violation (where `N = N_open + N_closed + N_violation`). Players whose accounts are not found are excluded. The default metric used to evaluate the performance of the threshold is the lower bound of the 95% [Wilson confidence interval](https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval) for the accuracy `X / N` (`metric="wilson_lower_bound"`): the accuracy we can be confident in among the players above the threshold. A threshold that is too low flags many players, but at an accuracy close to that of all players, while a threshold that is too high flags so few players that the confidence interval is very wide, so the lower bound is highest in between. For example, 3 of 3 flagged players being cheaters only tells us the accuracy is at least 44%, while 60 of 100 tells us it is at least 50%. 
+
+Alternatively, `metric="log_flagged"` uses `log(N+1) * X / N`, which rewards the accuracy and the number of flagged players, but continues to increase as more players are flagged even when they are no more likely to be cheating than any other player. The threshold is chosen by a grid search in steps of 0.005, from the 90th percentile of performance difference in the rating bin (or 0, if higher) up to the highest performance difference. This is an old metric that I initially developed, but has been superceded by the Wilson's lower bound.
 
 ### Sample code:
 ```python
@@ -93,6 +96,25 @@ fig.show()
 Below is an example of the threshold vs accuracy plot below for players in the 1400-1500 range for classical chess based on training data from the month of Jan 2015.
 
 ![sample threshold vs accuracy plot](images/sample_model_threshold.png)
+
+### Player Rating Graphs
+`make_player_rating_graphs.py` saves interactive html rating graphs of the players above the thresholds of a fitted model to the `player_rating_graphs` directory, with one file for each time control, settled or new games, and rating bin (`<base file name>_rating_graphs_<time control>_<settled or new>_<rating bin>.html`). Each player's rating after every game in that time control is plotted against the time of the game, colored by the status of their account (blue = open, orange = closed, red = terms of service violation, grey = unknown). The players are ordered by their mean performance difference, and the dropdown shows them 10 at a time (Players 1-10, Players 11-20, ...).
+
+The graphs use the individual games saved by `make_player_features.py` to `lichess_player_data/<base file name>_player_games.parquet`, which includes the timestamp and estimated RD of each game. By default, the saved player features and the model saved to `saved_models/<base file name>_model.pkl` are loaded, and with `--train`, the player features are regenerated and a new model is fitted and saved:
+
+```bash
+python3 make_player_rating_graphs.py lichess_player_data/lichess_db_standard_rated_2018-01.csv --train
+python3 make_player_rating_graphs.py lichess_player_data/lichess_db_standard_rated_2018-01.csv
+```
+
+The graphs can also be made from a model in Python, after it has been fitted:
+
+```python
+from make_player_rating_graphs import make_player_rating_graphs
+
+player_games = pd.read_parquet(f'lichess_player_data/{BASE_FILE_NAME}_player_games.parquet')
+make_player_rating_graphs(model, train_data, player_games, BASE_FILE_NAME)
+```
 
 ### Assumptions
 The model is built on the assumption that cheating is a rare occurrence in any data set on which the model is trained. There may be unexpected behavior if the training data is composed predomininantly of players who are cheating. The model will retain its default thresholds in the event that no players have shown any significant deviations from the mean expected performance in their rating bin. 
