@@ -42,7 +42,7 @@ The `download_and_preprocess.py` script creates the `lichess_player_data` direct
 Rating deviation (RD) is not included in the lichess game data, so each player's RD before each game is estimated from the size of their rating change (e.g. +10 for beating an equal opponent corresponds to an RD of around 60, while +150 corresponds to an RD of around 290). Players who are new to the rating pool start at 1500 with a high RD and move quickly towards their true rating, so a strong player who is new to the pool will overperform on the way up, and a beginner will underperform on the way down. To separate this effect from genuine over- or underperformance, the performance difference, mean rating, and rating change are also aggregated separately for settled games (estimated RD < 80) and new games (estimated RD >= 80), with the suffixes `_settled` and `_new`.
 
 ### Exploratory Plots
-`make_exploratory_plots.py` saves interactive html plots to the `exploratory_plots` directory, showing the distribution of mean performance difference by rating bin for bullet, blitz, and classical. Settled and new games are plotted separately (`_perf_diff_settled` and `_perf_diff_new`), on the same x-axis range so they can be compared directly. The plots can also be generated from an existing player features file:
+`make_exploratory_plots.py` saves one interactive html file to the `exploratory_plots` directory (`<base file name>_perf_diff.html`), showing the distribution of mean performance difference by rating bin, with a dropdown for the time control (bullet, blitz, rapid, or classical, for those in the data). Settled games (blue) and new games (orange) are overlaid on the same plot, with a second dropdown to show either or both, and the axes stay fixed when switching between them so they can be compared directly. The plots can also be generated from an existing player features file:
 
 ```bash
 python3 make_exploratory_plots.py lichess_player_data/lichess_db_standard_rated_2018-01_player_features.csv
@@ -76,20 +76,22 @@ predictions = model.predict(train_data)
 
 ### Model Evaluation
 
-When the model is fitted, plots showing how the threshold was chosen are saved to the `model_plots` directory as html files (to view in a browser) and json files:
-- `test_model_thresholds_overview`: the threshold chosen for every time control, settled or new games, and rating bin, and the Wilson lower bound at that threshold.
-- `test_model_thresholds_<time control>_<settled or new>_<rating bin>`: for one rating bin, the accuracy `X / N` at each threshold with its 95% Wilson confidence interval, the number of flagged players, and the chosen threshold.
+When the model is fitted, plots showing how the threshold was chosen are saved to the `model_plots` directory, as one html file to view in a browser (`test_model_thresholds.html`), and one json file of the same figures (`test_model_thresholds.json`). The html file shows:
+- at the top, the threshold chosen for every time control, settled or new games, and rating bin, and the Wilson lower bound at that threshold.
+- below it, with dropdowns for the time control, settled or new games, and rating bin: for that rating bin, the accuracy `X / N` at each threshold with its 95% Wilson confidence interval, the number of flagged players, and the chosen threshold.
 
-The figure object can be loaded from the json file, as shown in the example code snippet below:
+`test_model_threshold_selection.html` shows only the threshold selection plot and its dropdowns, without the overview, which is easier to follow for readers who are new to the analysis.
+
+The json file maps `<time control>_<settled or new>_<rating bin>` (and `overview`) to each figure, which can be loaded as shown in the example code snippet below:
 
 ```python
 import json
 import plotly.io as pio
 
-f = open('model_plots/test_model_thresholds_blitz_settled_1800-1900.json')
-data = json.load(f)
+with open('model_plots/test_model_thresholds.json') as f:
+    figures = json.load(f)
 
-fig = pio.from_json(data)
+fig = pio.from_json(figures['blitz_settled_1800-1900'])
 fig.show()
 ```
 
@@ -98,7 +100,7 @@ Below is an example of the threshold vs accuracy plot below for players in the 1
 ![sample threshold vs accuracy plot](images/sample_model_threshold.png)
 
 ### Player Rating Graphs
-`make_player_rating_graphs.py` saves interactive html rating graphs of the players above the thresholds of a fitted model to the `player_rating_graphs` directory, with one file for each time control, settled or new games, and rating bin (`<base file name>_rating_graphs_<time control>_<settled or new>_<rating bin>.html`). Each player's rating after every game in that time control is plotted against the time of the game, colored by the status of their account (blue = open, orange = closed, red = terms of service violation, grey = unknown). The players are ordered by their mean performance difference, and the dropdown shows them 10 at a time (Players 1-10, Players 11-20, ...).
+`make_player_rating_graphs.py` saves one interactive html file of rating graphs of the players above the thresholds of a fitted model to the `player_rating_graphs` directory (`<base file name>_rating_graphs.html`), with dropdowns for the time control, settled or new games, and rating bin. Each player's rating after every game in that time control is plotted against the number of games they have played (rather than the date, since players play at very different rates), colored by the status of their account (blue = open, orange = closed, red = terms of service violation, grey = unknown), and the date and time of each game is shown on hover. The players are ordered by their mean performance difference, and a fourth dropdown shows them 10 at a time (Players 1-10, Players 11-20, ..., which only lists the pages for the chosen rating bin), with the x-axis ending at the largest number of games played by any of those players.
 
 The graphs use the individual games saved by `make_player_features.py` to `lichess_player_data/<base file name>_player_games.parquet`, which includes the timestamp and estimated RD of each game. By default, the saved player features and the model saved to `saved_models/<base file name>_model.pkl` are loaded, and with `--train`, the player features are regenerated and a new model is fitted and saved:
 
@@ -122,11 +124,3 @@ The model is built on the assumption that cheating is a rare occurrence in any d
 ### Unit Tests
 Currently working on unit tests, which can be run with the following command:
 ```make test```, or if you want to run test files individually ```PYTHONPATH=. pytest tests/test_model.py```
-
-To-do:
-- implement progress bars for preprocessing data and model training
-- currently running tests to process > 1GB files, which I may outsource to GCP
-- complete data labelling using lichess API calls, with a workaround or retry request if API rate limiting occurs 
-- write unit tests for scripts that perform feature extraction and data labelling
-- complete unit tests for `PlayerAnomalyDetectionModel` class and methods (in-progress)
-- possible benchmarks for length of time to execute data downloading, preprocessing, and model training depending on the size of the raw data

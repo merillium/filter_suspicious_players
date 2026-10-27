@@ -3,26 +3,74 @@ import os
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from dropdown_page import write_dropdown_page
+from enums import TimeControl
+
 ## colors for the rate, its confidence interval, and the settled / new series
 RATE_COLOR = "#2a78d6"
 INTERVAL_FILL_COLOR = "rgba(42, 120, 214, 0.15)"
 LOWER_BOUND_COLOR = "#184f95"
-CHOSEN_THRESHOLD_COLOR = "#555555"
+DASHED_LINE_COLOR = "#bbbbbb"
 RD_GROUP_COLORS = {"settled": "#2a78d6", "new": "#eb6834"}
 
 
-def save_figure(fig, model_plots_folder, file_name):
-    """Saves the figure as an html file to view, and a json file that can be loaded with plotly.io.from_json"""
-    if not os.path.exists(model_plots_folder):
-        os.mkdir(model_plots_folder)
-    fig.write_html(f"{model_plots_folder}/{file_name}.html", include_plotlyjs="cdn")
-    with open(f"{model_plots_folder}/{file_name}.json", "w") as f:
-        json.dump(fig.to_json(), f)
+def save_model_plots(
+    base_file_name, model_plots_folder, threshold_figures, overview_figure
+):
+    """Saves the model plots to one html file, with the overview at the top and dropdowns for the
+    time control, settled or new games, and rating bin of the threshold plot below it, and to a second
+    html file with only the threshold plot and its dropdowns.
+    The figures are also saved to one json file of {"<time control>_<settled or new>_<rating bin>": figure json},
+    and each figure can be loaded with plotly.io.from_json.
+
+    threshold_figures maps (time control, settled or new, rating bin) to the threshold plot of that rating bin.
+    """
+    os.makedirs(model_plots_folder, exist_ok=True)
+    sorted_keys = sorted(
+        threshold_figures,
+        key=lambda key: (
+            TimeControl.ALL.value.index(key[0]),
+            list(RD_GROUP_COLORS).index(key[1]),
+            key[2],
+        ),
+    )
+    dropdown_figures = {
+        (
+            time_control.capitalize(),
+            rd_group.capitalize(),
+            f"{rating_bin}-{rating_bin+100}",
+        ): threshold_figures[(time_control, rd_group, rating_bin)]
+        for time_control, rd_group, rating_bin in sorted_keys
+    }
+    dropdown_labels = ["Time control", "Games", "Rating bin"]
+    write_dropdown_page(
+        f"{model_plots_folder}/{base_file_name}_model_thresholds.html",
+        "Model Thresholds",
+        dropdown_figures,
+        dropdown_labels=dropdown_labels,
+        header_figure=overview_figure,
+    )
+    ## the overview is hard to read at a glance, so the threshold selection plots are also saved without it
+    write_dropdown_page(
+        f"{model_plots_folder}/{base_file_name}_model_threshold_selection.html",
+        "Model Threshold Selection",
+        dropdown_figures,
+        dropdown_labels=dropdown_labels,
+    )
+
+    figures_json = {
+        f"{time_control}_{rd_group}_{rating_bin}-{rating_bin+100}": threshold_figures[
+            (time_control, rd_group, rating_bin)
+        ].to_json()
+        for time_control, rd_group, rating_bin in sorted_keys
+    }
+    if overview_figure is not None:
+        figures_json["overview"] = overview_figure.to_json()
+    with open(f"{model_plots_folder}/{base_file_name}_model_thresholds.json", "w") as f:
+        json.dump(figures_json, f)
 
 
-def generate_model_threshold_plots(
-    base_file_name,
-    model_plots_folder,
+def make_model_threshold_figure(
     train_threshold_list,
     train_accuracy_list,
     train_accuracy_lower_bounds,
@@ -35,7 +83,7 @@ def generate_model_threshold_plots(
     rating_bin_key,
     metric_name,
 ):
-    """Generate a model threshold plot for one rating bin, showing the accuracy X / N of each threshold
+    """Returns a model threshold plot for one rating bin, showing the accuracy X / N of each threshold
     with its 95% Wilson confidence interval, the number of flagged players, and the chosen threshold."""
 
     ## the wilson lower bound is drawn in the accuracy panel, any other metric gets its own panel
@@ -145,7 +193,7 @@ def generate_model_threshold_plots(
         )
 
     fig.add_vline(
-        x=best_threshold, line_width=1.5, line_dash="dash", line_color=CHOSEN_THRESHOLD_COLOR
+        x=best_threshold, line_width=1.5, line_dash="dash", line_color=DASHED_LINE_COLOR
     )
     fig.update_layout(
         title=(
@@ -164,22 +212,16 @@ def generate_model_threshold_plots(
         fig.update_yaxes(title_text="Metric", gridcolor="#eeeeee", row=3, col=1)
     fig.update_xaxes(title_text="Threshold (mean performance difference)", row=rows, col=1)
 
-    save_figure(
-        fig,
-        model_plots_folder,
-        f"{base_file_name}_model_thresholds_{time_control}_{rd_group}_{rating_bin_key}",
-    )
+    return fig
 
 
-def generate_model_thresholds_overview_plot(
-    base_file_name,
-    model_plots_folder,
+def make_model_thresholds_overview_figure(
     thresholds,
     threshold_metrics,
     threshold_number_of_flagged_players,
     metric_name,
 ):
-    """Generate one plot of the chosen threshold, and the metric at that threshold, for every fitted
+    """Returns one plot of the chosen threshold, and the metric at that threshold, for every fitted
     (time control, settled or new, rating bin), with one column per time control."""
 
     time_controls = sorted(
@@ -190,7 +232,7 @@ def generate_model_thresholds_overview_plot(
         }
     )
     if not time_controls:
-        return
+        return None
 
     fig = make_subplots(
         rows=2,
@@ -280,4 +322,4 @@ def generate_model_thresholds_overview_plot(
         height=700,
         legend={"orientation": "h", "y": -0.12},
     )
-    save_figure(fig, model_plots_folder, f"{base_file_name}_model_thresholds_overview")
+    return fig

@@ -7,8 +7,9 @@ import pandas as pd
 from enums import TimeControl, Folders
 from player_account_handler import PlayerAccountHandler
 from model_plots import (
-    generate_model_threshold_plots,
-    generate_model_thresholds_overview_plot,
+    make_model_threshold_figure,
+    make_model_thresholds_overview_figure,
+    save_model_plots,
 )
 
 ## settled (RD < 80) and new (RD >= 80) games are fitted separately, see make_player_features.py
@@ -171,6 +172,7 @@ class PlayerAnomalyDetectionModel:
             pd.concat([df["player"] for df in all_rd_group_data.values()]).unique()
         )
         metric_function = METRICS[self._metric]
+        threshold_figures = {}
 
         for rd_group, rd_group_data in all_rd_group_data.items():
             ## players whose accounts were not found have no label, so they are excluded
@@ -228,9 +230,9 @@ class PlayerAnomalyDetectionModel:
                     accuracy_lower_bounds, accuracy_upper_bounds = wilson_interval(
                         number_of_flagged_players, estimated_cheaters
                     )
-                    generate_model_threshold_plots(
-                        BASE_FILE_NAME,
-                        Folders.MODEL_PLOTS.value,
+                    threshold_figures[
+                        (time_control, rd_group, rating_bin)
+                    ] = make_model_threshold_figure(
                         train_thresholds,
                         train_accuracies,
                         accuracy_lower_bounds,
@@ -245,13 +247,17 @@ class PlayerAnomalyDetectionModel:
                     )
 
         if generate_plots:
-            generate_model_thresholds_overview_plot(
-                BASE_FILE_NAME,
-                Folders.MODEL_PLOTS.value,
+            overview_figure = make_model_thresholds_overview_figure(
                 self._thresholds,
                 self._threshold_metrics,
                 self._threshold_number_of_flagged_players,
                 self._metric,
+            )
+            save_model_plots(
+                BASE_FILE_NAME,
+                Folders.MODEL_PLOTS.value,
+                threshold_figures,
+                overview_figure,
             )
 
     def predict(self, test_data: pd.DataFrame):

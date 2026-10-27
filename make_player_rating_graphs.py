@@ -4,7 +4,8 @@ from pathlib import Path
 import pandas as pd
 import plotly.graph_objects as go
 
-from enums import Folders
+from dropdown_page import write_dropdown_page
+from enums import Folders, TimeControl
 from make_player_features import make_player_features
 from model import PlayerAnomalyDetectionModel, RD_GROUP_MIN_GAMES, get_rd_group_data
 from player_account_handler import PlayerAccountHandler
@@ -24,22 +25,26 @@ def make_player_rating_graph(
     flagged_players: pd.DataFrame,
     player_games: pd.DataFrame,
     title: str,
-    players_per_page=PLAYERS_PER_PAGE,
+    first_rank=1,
 ):
     """Returns a figure with the rating graph of each flagged player, in the order of flagged_players,
-    with a dropdown that shows players_per_page players at a time.
+    numbered from first_rank.
 
     flagged_players has columns player, time_control, mean_perf_diff, and account_status,
     and player_games is indexed by (player, time_control) with one row per game.
     """
+    ## players play at different rates, so ratings are plotted against the number of games played,
+    ## up to the largest number of games played by any of the players
     fig = go.Figure()
-    for rank, player in enumerate(flagged_players.itertuples(), start=1):
+    numbers_of_games = []
+    for rank, player in enumerate(flagged_players.itertuples(), start=first_rank):
         games = player_games.loc[(player.player, player.time_control)].sort_values(
             "utc_datetime"
         )
+        numbers_of_games.append(len(games))
         fig.add_trace(
             go.Scatter(
-                x=games["utc_datetime"],
+                x=list(range(1, len(games) + 1)),
                 y=games["ratings"] + games["rating_gains"],
                 mode="lines+markers",
                 line={
@@ -50,18 +55,18 @@ def make_player_rating_graph(
                 },
                 marker={"size": 3},
                 name=f"{rank}. {player.player} ({player.account_status}, {player.mean_perf_diff:+.3f})",
-                visible=rank <= players_per_page,
                 customdata=list(
                     zip(
                         games["rating_gains"],
                         games["opponent_ratings"],
                         games["actual_scores"].map(RESULTS),
                         games["estimated_rd"].round(0),
+                        games["utc_datetime"].dt.strftime("%Y-%m-%d %H:%M"),
                     )
                 ),
                 hovertemplate=(
                     f"<b>{player.player}</b><br>"
-                    "%{x|%Y-%m-%d %H:%M}<br>"
+                    "Game %{x}, %{customdata[4]} UTC<br>"
                     "Rating: %{y} (%{customdata[0]:+d})<br>"
                     "%{customdata[2]} vs %{customdata[1]}<br>"
                     "Estimated RD: %{customdata[3]}<extra></extra>"
@@ -69,48 +74,36 @@ def make_player_rating_graph(
             )
         )
 
-    ## one dropdown option per page of players, which shows only the traces on that page
-    number_of_players = len(flagged_players)
-    buttons = [
-        {
-            "label": f"Players {start + 1}-{min(start + players_per_page, number_of_players)}",
-            "method": "update",
-            "args": [
-                {
-                    "visible": [
-                        start <= i < start + players_per_page
-                        for i in range(number_of_players)
-                    ]
-                }
-            ],
-        }
-        for start in range(0, number_of_players, players_per_page)
-    ]
     status_key = " ".join(
         f"<span style='color:{color}'>■ {status}</span>"
         for status, color in ACCOUNT_STATUS_COLORS.items()
     )
     fig.update_layout(
         title=f"{title}<br><sup>{status_key}</sup>",
-        updatemenus=[
-            {
-                "buttons": buttons,
-                "direction": "down",
-                "x": 1.0,
-                "xanchor": "right",
-                "y": 1.12,
-                "yanchor": "top",
-            }
-        ],
-        xaxis_title="Date (UTC)",
+        xaxis_title="Number of games",
+        xaxis_range=[1, max(numbers_of_games)],
         yaxis_title="Rating",
         hovermode="closest",
         plot_bgcolor="white",
+        height=650,
         legend_title="Player (account status, mean performance difference)",
     )
     fig.update_xaxes(gridcolor="#eeeeee")
     fig.update_yaxes(gridcolor="#eeeeee")
     return fig
+
+
+def get_player_pages(flagged_players: pd.DataFrame, players_per_page=PLAYERS_PER_PAGE):
+    """Returns [(label, first rank, players on that page)] for pages of players_per_page players."""
+    number_of_players = len(flagged_players)
+    return [
+        (
+            f"Players {start + 1}-{min(start + players_per_page, number_of_players)}",
+            start + 1,
+            flagged_players.iloc[start : start + players_per_page],
+        )
+        for start in range(0, number_of_players, players_per_page)
+    ]
 
 
 def make_player_rating_graphs(
@@ -121,10 +114,9 @@ def make_player_rating_graphs(
     rating_graphs_folder=Folders.PLAYER_RATING_GRAPHS.value,
     players_per_page=PLAYERS_PER_PAGE,
 ):
-    """Saves an html file of rating graphs for the players above the threshold of a fitted model,
-    for each time control, settled or new games, and rating bin, with the players in order of
-    their mean performance difference (within settled or new games)."""
-    os.makedirs(rating_graphs_folder, exist_ok=True)
+    """Saves one html file of rating graphs for the players above the threshold of a fitted model,
+    with dropdowns for the time control, settled or new games, rating bin, and page of players_per_page
+    players, with the players in order of their mean performance difference (within settled or new games)."""
     predictions = model.predict(player_features)
 
     ## the account status of flagged players is usually cached during fitting, but not for new data
@@ -139,6 +131,7 @@ def make_player_rating_graphs(
     )
 
     player_games = player_games.set_index(["player", "time_control"]).sort_index()
+    rating_bin_figures = []
     for rd_group in RD_GROUP_MIN_GAMES:
         rd_group_data = get_rd_group_data(predictions, rd_group)
         flagged = rd_group_data[
@@ -154,19 +147,48 @@ def make_player_rating_graphs(
             flagged_players = flagged_players.sort_values(
                 "mean_perf_diff", ascending=False
             )
-            fig = make_player_rating_graph(
-                flagged_players,
-                player_games,
-                title=(
-                    f"{time_control.capitalize()} {rating_bin_key}, {rd_group} games: "
-                    f"{len(flagged_players)} players above a mean performance difference of {threshold:.3f}"
-                ),
-                players_per_page=players_per_page,
+            title = (
+                f"{time_control.capitalize()} {rating_bin_key}, {rd_group} games: "
+                f"{len(flagged_players)} players above a mean performance difference of {threshold:.3f}"
             )
-            fig.write_html(
-                f"{rating_graphs_folder}/{base_file_name}_rating_graphs_{time_control}_{rd_group}_{rating_bin_key}.html",
-                include_plotlyjs="cdn",
+            ## each page of players is a separate figure, so the number of pages can differ between rating bins
+            rating_bin_figures.append(
+                (
+                    (
+                        TimeControl.ALL.value.index(time_control),
+                        list(RD_GROUP_MIN_GAMES).index(rd_group),
+                        rating_bin,
+                    ),
+                    [
+                        (
+                            (
+                                time_control.capitalize(),
+                                rd_group.capitalize(),
+                                rating_bin_key,
+                                page_label,
+                            ),
+                            make_player_rating_graph(
+                                page_players, player_games, title, first_rank
+                            ),
+                        )
+                        for page_label, first_rank, page_players in get_player_pages(
+                            flagged_players, players_per_page
+                        )
+                    ],
+                )
             )
+
+    rating_bin_figures.sort(key=lambda sort_key_and_pages: sort_key_and_pages[0])
+    write_dropdown_page(
+        f"{rating_graphs_folder}/{base_file_name}_rating_graphs.html",
+        "Player Rating Graphs",
+        {
+            key: fig
+            for _, pages in rating_bin_figures
+            for key, fig in pages
+        },
+        dropdown_labels=["Time control", "Games", "Rating bin", "Players"],
+    )
 
 
 if __name__ == "__main__":
